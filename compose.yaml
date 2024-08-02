@@ -1,0 +1,89 @@
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION?required}
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:8088:8080"
+    command:
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic_conf.yml"
+      - "--providers.file.watch=true"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entryPoints.web.http.redirections.entryPoint.permanent=true"
+      - "--entryPoints.websecure.address=:443"
+      - "--ping=true"
+    volumes:
+      - ./docker/traefik/certs:/etc/certs:ro
+      - ./docker/traefik/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  nginx:
+    image: nginxinc/nginx-unprivileged:${NGINX_VERSION?required}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kindly-server.rule=Host(`api.kindly.localhost`)"
+      - "traefik.http.services.kindly-server.loadbalancer.server.port=8080"
+      - "traefik.http.routers.kindly-server.entryPoints=websecure"
+      - "traefik.http.routers.kindly-server.tls=true"
+    environment:
+      NGINX_PORT: 8080
+      API_HOST: api
+      API_PORT: 9000
+    volumes:
+      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template
+      - ./public:/var/www/html/public:ro
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION?required}
+    environment:
+      PHP_EXTENSION_XDEBUG: "1"
+      PHP_IDE_CONFIG: "serverName=_"
+      PHP_INI_MEMORY_LIMIT: "1G"
+      PHP_INI_OPCACHE__ENABLE_CLI: 1
+      PHP_INI_OPCACHE__REVALIDATE_FREQ: 0
+      PHP_INI_XDEBUG__IDEKEY: "PHPSTORM"
+      PHP_INI_XDEBUG__LOG_LEVEL: 0
+      PHP_INI_XDEBUG__OUTPUT_DIR: /var/www/html/var
+    volumes:
+      - .:/var/www/html
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:${POSTGRES_VERSION?required}
+    shm_size: 1g
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/dump:/docker-entrypoint-initdb.d:ro
+
+  adminer:
+    image: adminer:${ADMINER_VERSION?required}
+    command: ["php", "-S", "0.0.0.0:8080", "-t", "/var/www/html"]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kindly-adminer.rule=Host(`adminer.kindly.localhost`)"
+      - "traefik.http.services.kindly-adminer.loadbalancer.server.port=8080"
+      - "traefik.http.routers.kindly-adminer.entryPoints=websecure"
+      - "traefik.http.routers.kindly-adminer.tls=true"
+
+volumes:
+  postgres-data:
